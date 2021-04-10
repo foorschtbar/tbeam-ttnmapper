@@ -48,8 +48,10 @@ u4_t lmicSeqNumber = 0;
 // flag to clear display only if was inverse before
 bool display_is_inverse = false;
 
-// time since las buttonpress
-uint32_t lastkeypress = 0;
+// time since last buttonpress
+// bool previousButtonState = 1; // will store last Button state. 1 = unpressed, 0 = pressed
+// uint32_t lastButtonTimer = 0; // will store how long button was pressed
+ulong lastkeypress = 0;
 bool setlock = false;
 
 // TinyGPS Wrapper
@@ -80,6 +82,15 @@ const lmic_pinmap lmic_pins = {
     //.dio = {26, 33, 32},
     .dio = {LORA_DIO0, LORA_DIO1, LORA_DIO2},
 };
+
+void beep(uint32_t time)
+{
+#ifdef BUZZER_PIN
+  digitalWrite(BUZZER_PIN, LOW);
+  delay(time);
+  digitalWrite(BUZZER_PIN, HIGH);
+#endif
+}
 
 // Lora Event Handling
 void onEvent(ev_t ev)
@@ -122,6 +133,7 @@ void onEvent(ev_t ev)
     packets_send++;
     LoraStatus = "TXCOMPL";
     digitalWrite(BUILTIN_LED, LOW);
+    beep(50);
     if (LMIC.txrxFlags & TXRX_ACK)
     {
       LoraStatus = "Recvd Ack";
@@ -370,9 +382,9 @@ void uiThread(void *parameter)
         u8x8.print("HDOP:  ");
         u8x8.println(dispBuffer[4] / 10.0);
         u8x8.print("Sat:   ");
-        u8x8.print(dispBuffer[5]);
+        u8x8.print(dispBuffer[5]); // NMEA Sentence GPGSV, Element 3 (Sat in View)
         u8x8.print("/");
-        u8x8.println(dispBuffer[0]);
+        u8x8.println(dispBuffer[0]); // Number of satellites in use (u32)
         u8x8.print("Int:   ");
         u8x8.print(sendInterval[sendIntervalKey]);
         u8x8.print("  ");
@@ -455,7 +467,12 @@ void uiThread(void *parameter)
 void init_LMIC()
 {
   LMIC_reset();
-  LMIC_setSession(0x13, DEVADDR, NWKSKEY, APPSKEY);
+
+  uint8_t appskey[sizeof(APPSKEY)];
+  uint8_t nwkskey[sizeof(NWKSKEY)];
+  memcpy_P(appskey, APPSKEY, sizeof(APPSKEY));
+  memcpy_P(nwkskey, NWKSKEY, sizeof(NWKSKEY));
+  LMIC_setSession(0x13, DEVADDR, nwkskey, appskey);
 
 #if defined(CFG_eu868)
   // Set up the channels used by the Things Network, which corresponds
@@ -543,6 +560,27 @@ void IRAM_ATTR isr()
   }
 }
 
+// void handleButton()
+// {
+//   bool inp = digitalRead(BUTTON_R);
+//   if (inp == 0)
+//   {
+//     if (inp != previousButtonState)
+//     {
+//       Serial.printf("%lu: Button pressed short\n", millis());
+//       lastButtonTimer = millis();
+//     }
+//     if ((millis() - lastButtonTimer >= 5000))
+//     {
+//       Serial.printf("%lu: Button pressed long\n", millis());
+//       lastButtonTimer = millis();
+//     }
+//     // Delay a little bit to avoid bouncing
+//     delay(50);
+//   }
+//   previousButtonState = inp;
+// }
+
 void setup()
 {
 
@@ -551,6 +589,12 @@ void setup()
   // Setup Hardware
 #ifdef V1_0
   pinMode(BAT_PIN, INPUT);
+#endif
+
+#ifdef BUZZER_PIN
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, HIGH);
+  beep(500);
 #endif
 
   // Init GPS
@@ -585,6 +629,9 @@ void loop()
   vbat = (float)(analogRead(BAT_PIN)) / 4095 * 2 * 3.3 * 1.1;
 #endif
 
+  // Button
+  // handleButton();
+
   // check whether LMIC hangs and re-init
   if (LoraStatus == "QUEUED" && lastsendjob > 0 && (millis() - lastsendjob > 10000))
   {
@@ -598,6 +645,9 @@ void loop()
   {
     setlock = false;
     lastkeypress = 0;
+
+    // Delay a little bit to avoid bouncing
+    delay(50);
   }
 
   hasFix = gps.checkGpsFix();
