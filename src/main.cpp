@@ -52,7 +52,12 @@ bool display_is_inverse = false;
 // bool previousButtonState = 1; // will store last Button state. 1 = unpressed, 0 = pressed
 // uint32_t lastButtonTimer = 0; // will store how long button was pressed
 ulong lastkeypress = 0;
-bool setlock = false;
+int screen = 0;
+bool screenSetMode = false;
+bool clearScreen = false;
+
+// Beeper On/Off
+bool beeperOn = true;
 
 // TinyGPS Wrapper
 Gps gps;
@@ -85,10 +90,13 @@ const lmic_pinmap lmic_pins = {
 
 void beep(uint32_t time)
 {
-#ifdef BUZZER_PIN
-  digitalWrite(BUZZER_PIN, LOW);
-  delay(time);
-  digitalWrite(BUZZER_PIN, HIGH);
+#ifdef BEEPER_PIN
+  if (beeperOn)
+  {
+    digitalWrite(BEEPER_PIN, LOW);
+    delay(time);
+    digitalWrite(BEEPER_PIN, HIGH);
+  }
 #endif
 }
 
@@ -267,9 +275,8 @@ void uiThread(void *parameter)
   // setting the interrupt to handle state changes on AXP
   pinMode(PMU_IRQ, INPUT_PULLUP);
   attachInterrupt(
-      PMU_IRQ, [] {
-        pmu_irq = true;
-      },
+      PMU_IRQ, []
+      { pmu_irq = true; },
       FALLING);
 
   // enable ADC Measuring
@@ -286,8 +293,6 @@ void uiThread(void *parameter)
 
   // Endless Loop for Display Thread
   bool lastState = hasFix;
-  bool cleared_setscreen = false;
-  bool cleared_normscreen = false;
   for (;;)
   {
 
@@ -316,35 +321,74 @@ void uiThread(void *parameter)
     vbat = axp.getBattVoltage() / 1000.0;
 #endif
 
-    // Settings screen, shown 5secs after last keypress. Reset in main loop
-    if (setlock)
+    // avoid flicker
+    if (clearScreen)
     {
-
-      cleared_normscreen = false;
-
-      // avoid flicker
-      if (!cleared_setscreen)
-      {
-        u8x8.clear();
-        u8x8.setInverseFont(0);
-        cleared_setscreen = true;
-      }
-      u8x8.home();
-      u8x8.setFont(u8x8_font_victoriabold8_r);
-      u8x8.println("Interval");
-      u8x8.setFont(u8x8_font_courB18_2x3_n);
-      u8x8.println(sendInterval[sendIntervalKey]);
-      delay(50);
+      u8x8.clear();
+      u8x8.setInverseFont(0);
+      clearScreen = false;
     }
-    else
-    {
 
-      cleared_setscreen = false;
-      if (!cleared_normscreen)
+    switch (screen)
+    {
+    case 1:
+
+      u8x8.home();
+
+      if (screenSetMode)
       {
-        u8x8.clear();
-        cleared_normscreen = true;
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 1);
+        u8x8.println("   Interval:  ");
+        u8x8.setFont(u8x8_font_courB18_2x3_f);
+        u8x8.setCursor(6, 3);
+        u8x8.println(sendInterval[sendIntervalKey]);
       }
+      else
+      {
+        u8x8.setFont(u8x8_font_open_iconic_embedded_4x4);
+        u8x8.drawGlyph(6, 1, 70);
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 6);
+        u8x8.println("  Set Interval  ");
+      }
+
+      delay(50);
+      break;
+
+    case 2:
+
+      u8x8.home();
+
+      if (screenSetMode)
+      {
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 1);
+        u8x8.println("    Beeper:  ");
+        u8x8.setFont(u8x8_font_courB18_2x3_f);
+        u8x8.setCursor(6, 3);
+        if (beeperOn)
+        {
+          u8x8.println("On");
+        }
+        else
+        {
+          u8x8.println("Off");
+        }
+      }
+      else
+      {
+        u8x8.setFont(u8x8_font_open_iconic_embedded_4x4);
+        u8x8.drawGlyph(6, 1, 65);
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 6);
+        u8x8.println("   Set Beeper   ");
+      }
+      delay(50);
+      break;
+
+    default:
+    {
 
       //u8x8.setFont(u8x8_font_amstrad_cpc_extended_r);
       u8x8.setFont(u8x8_font_victoriabold8_r); // <- this font is better readable IMHO
@@ -461,6 +505,9 @@ void uiThread(void *parameter)
       }
       delay(50);
     }
+
+    break;
+    }
   }
 }
 
@@ -551,12 +598,35 @@ void init_LMIC()
 // interrupt handler for buttonpress
 void IRAM_ATTR isr()
 {
-  setlock = true;
+
+  clearScreen = true;
+
   lastkeypress = millis();
-  sendIntervalKey++;
-  if (sendIntervalKey >= (sizeof(sendInterval) / sizeof(*sendInterval)))
+
+  if (screenSetMode)
   {
-    sendIntervalKey = 0;
+    switch (screen)
+    {
+    case 1:
+      sendIntervalKey++;
+      if (sendIntervalKey >= (sizeof(sendInterval) / sizeof(*sendInterval)))
+      {
+        sendIntervalKey = 0;
+      }
+      break;
+
+    case 2:
+      beeperOn = !beeperOn;
+      break;
+    }
+  }
+  else
+  {
+    screen++;
+    if (screen > 2)
+    {
+      screen = 0;
+    }
   }
 }
 
@@ -589,12 +659,6 @@ void setup()
   // Setup Hardware
 #ifdef V1_0
   pinMode(BAT_PIN, INPUT);
-#endif
-
-#ifdef BUZZER_PIN
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, HIGH);
-  beep(500);
 #endif
 
   // Init GPS
@@ -640,11 +704,22 @@ void loop()
     LoraStatus = "LMIC_RST";
   }
 
-  // check settings lock for display
-  if (lastkeypress > 0 && (millis() - lastkeypress > 5000))
+  // enter edit mode
+  if (lastkeypress > 0 && (millis() - lastkeypress > 1000) && screen != 0 && screenSetMode == false)
   {
-    setlock = false;
-    lastkeypress = 0;
+    clearScreen = true;
+    screenSetMode = true;
+
+    // Delay a little bit to avoid bouncing
+    delay(50);
+  }
+
+  // back to home screen
+  if (lastkeypress > 0 && (millis() - lastkeypress > 5000) && screen != 0)
+  {
+    screen = 0;
+    clearScreen = true;
+    screenSetMode = false;
 
     // Delay a little bit to avoid bouncing
     delay(50);
