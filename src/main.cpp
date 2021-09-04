@@ -49,15 +49,20 @@ u4_t lmicSeqNumber = 0;
 bool display_is_inverse = false;
 
 // time since last buttonpress
-// bool previousButtonState = 1; // will store last Button state. 1 = unpressed, 0 = pressed
-// uint32_t lastButtonTimer = 0; // will store how long button was pressed
 ulong lastkeypress = 0;
+
 int screen = 0;
 bool screenSetMode = false;
 bool clearScreen = false;
 
-// Beeper On/Off
-bool beeperOn = true;
+// Beeper Off/TX_START/EV_TXCOMPLETE
+enum _beep_t
+{
+  BEEP_OFF,
+  BEEP_TXCOMPL,
+  BEEP_QUEUED
+};
+int beeperAction = BEEP_QUEUED;
 
 // TinyGPS Wrapper
 Gps gps;
@@ -91,12 +96,9 @@ const lmic_pinmap lmic_pins = {
 void beep(uint32_t time)
 {
 #ifdef BEEPER_PIN
-  if (beeperOn)
-  {
-    digitalWrite(BEEPER_PIN, LOW);
-    delay(time);
-    digitalWrite(BEEPER_PIN, HIGH);
-  }
+  digitalWrite(BEEPER_PIN, LOW);
+  delay(time);
+  digitalWrite(BEEPER_PIN, HIGH);
 #endif
 }
 
@@ -141,7 +143,13 @@ void onEvent(ev_t ev)
     packets_send++;
     LoraStatus = "TXCOMPL";
     digitalWrite(BUILTIN_LED, LOW);
-    beep(50);
+
+    // Beep if transimission if LoRa packaged is complete
+    if (beeperAction == BEEP_TXCOMPL)
+    {
+      beep(50);
+    }
+
     if (LMIC.txrxFlags & TXRX_ACK)
     {
       LoraStatus = "Recvd Ack";
@@ -188,6 +196,12 @@ void do_send(osjob_t *j)
         LMIC_setTxData2(TTN_PORT, loraBuffer, sizeof(loraBuffer), 0);
         digitalWrite(BUILTIN_LED, HIGH);
         LoraStatus = "QUEUED";
+
+        // Beep if new LoRa packaged had been queued
+        if (beeperAction == BEEP_QUEUED)
+        {
+          beep(50);
+        }
 
         //keep time for timeout
         lastsendjob = millis();
@@ -366,14 +380,20 @@ void uiThread(void *parameter)
         u8x8.setCursor(0, 1);
         u8x8.println("    Beeper:  ");
         u8x8.setFont(u8x8_font_courB18_2x3_f);
-        u8x8.setCursor(6, 3);
-        if (beeperOn)
+        u8x8.setCursor(0, 3);
+        switch (beeperAction)
         {
-          u8x8.println("On");
-        }
-        else
-        {
-          u8x8.println("Off");
+        case BEEP_OFF:
+          u8x8.println("  OFF");
+          break;
+
+        case BEEP_TXCOMPL:
+          u8x8.println("TXCOMPL");
+          break;
+
+        case BEEP_QUEUED:
+          u8x8.println(" QUEUED");
+          break;
         }
       }
       else
@@ -616,7 +636,11 @@ void IRAM_ATTR isr()
       break;
 
     case 2:
-      beeperOn = !beeperOn;
+      beeperAction++;
+      if (beeperAction > BEEP_QUEUED)
+      {
+        beeperAction = BEEP_OFF;
+      }
       break;
     }
   }
@@ -629,27 +653,6 @@ void IRAM_ATTR isr()
     }
   }
 }
-
-// void handleButton()
-// {
-//   bool inp = digitalRead(BUTTON_R);
-//   if (inp == 0)
-//   {
-//     if (inp != previousButtonState)
-//     {
-//       Serial.printf("%lu: Button pressed short\n", millis());
-//       lastButtonTimer = millis();
-//     }
-//     if ((millis() - lastButtonTimer >= 5000))
-//     {
-//       Serial.printf("%lu: Button pressed long\n", millis());
-//       lastButtonTimer = millis();
-//     }
-//     // Delay a little bit to avoid bouncing
-//     delay(50);
-//   }
-//   previousButtonState = inp;
-// }
 
 void setup()
 {
@@ -673,12 +676,16 @@ void setup()
 
   // Builtin LED will be used to indicate LoRa Activity
   pinMode(BUILTIN_LED, OUTPUT);
+  digitalWrite(BUILTIN_LED, HIGH);
 
   // LoRa Init
   os_init();
   init_LMIC();
-
   digitalWrite(BUILTIN_LED, LOW);
+
+  // Beeper
+  pinMode(BEEPER_PIN, OUTPUT);
+  digitalWrite(BEEPER_PIN, HIGH);
 
   // use an interrupt for buttonpress
   pinMode(BUTTON_R, INPUT);
@@ -692,9 +699,6 @@ void loop()
 #ifdef V1_0
   vbat = (float)(analogRead(BAT_PIN)) / 4095 * 2 * 3.3 * 1.1;
 #endif
-
-  // Button
-  // handleButton();
 
   // check whether LMIC hangs and re-init
   if (LoraStatus == "QUEUED" && lastsendjob > 0 && (millis() - lastsendjob > 10000))
