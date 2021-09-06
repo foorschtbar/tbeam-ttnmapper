@@ -51,7 +51,16 @@ bool display_is_inverse = false;
 // time since last buttonpress
 ulong lastkeypress = 0;
 
-int screen = 0;
+// Screens for Menu
+enum _screens_t
+{
+  SCREEN_DEFAULT,
+  SCREEN_CFG_INTERVAL,
+  SCREEN_CFG_BEEPER,
+  SCREEN_CFG_GPS
+};
+int screens[] = {SCREEN_DEFAULT, SCREEN_CFG_INTERVAL, SCREEN_CFG_BEEPER, SCREEN_CFG_GPS};
+int screenCurrent = SCREEN_DEFAULT;
 bool screenSetMode = false;
 bool clearScreen = false;
 
@@ -63,6 +72,13 @@ enum _beep_t
   BEEP_QUEUED
 };
 int beeperAction = BEEP_QUEUED;
+
+enum _gps_t
+{
+  GPS_FAKE,
+  GPS_WAIT
+};
+int gpsAction = GPS_WAIT;
 
 // TinyGPS Wrapper
 Gps gps;
@@ -187,36 +203,51 @@ void do_send(osjob_t *j)
   }
   else
   {
-    if (hasFix)
+    bool sendData = false;
+
+    if (gpsAction == GPS_FAKE)
+    {
+      // Fake data
+      loraBuffer[0] = 0x00;
+      loraBuffer[1] = 0x00;
+      loraBuffer[2] = 0x00;
+      loraBuffer[3] = 0x00;
+      loraBuffer[4] = 0x00;
+      loraBuffer[5] = 0x00;
+      loraBuffer[6] = (packets_send >> 8) & 0xFF;
+      loraBuffer[7] = packets_send & 0xFF;
+      loraBuffer[8] = 0x00;
+      sendData = true;
+    }
+    else if (gpsAction == GPS_WAIT && hasFix)
     {
       // Prepare upstream data transmission at the next possible time.
-      if (gps.buildPacket(loraBuffer))
+      gps.buildPacket(loraBuffer);
+      sendData = true;
+    }
+
+    if (sendData)
+    {
+
+      LMIC_setTxData2(TTN_PORT, loraBuffer, sizeof(loraBuffer), 0);
+      digitalWrite(BUILTIN_LED, HIGH);
+      LoraStatus = "QUEUED";
+
+      // Beep if new LoRa packaged had been queued
+      if (beeperAction == BEEP_QUEUED)
       {
-
-        LMIC_setTxData2(TTN_PORT, loraBuffer, sizeof(loraBuffer), 0);
-        digitalWrite(BUILTIN_LED, HIGH);
-        LoraStatus = "QUEUED";
-
-        // Beep if new LoRa packaged had been queued
-        if (beeperAction == BEEP_QUEUED)
-        {
-          beep(50);
-        }
-
-        //keep time for timeout
-        lastsendjob = millis();
+        beep(50);
       }
-      else
-      {
-        LoraStatus = "GPS FAIL";
-        os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(3), do_send);
-      }
+
+      //keep time for timeout
+      lastsendjob = millis();
     }
     else
     {
       LoraStatus = "NO FIX";
-      os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(3), do_send);
     }
+
+    os_setTimedCallback(&sendjob, os_getTime() + sec2osticks(3), do_send);
   }
 }
 
@@ -343,9 +374,9 @@ void uiThread(void *parameter)
       clearScreen = false;
     }
 
-    switch (screen)
+    switch (screenCurrent)
     {
-    case 1:
+    case SCREEN_CFG_INTERVAL:
 
       u8x8.home();
 
@@ -370,7 +401,7 @@ void uiThread(void *parameter)
       delay(50);
       break;
 
-    case 2:
+    case SCREEN_CFG_BEEPER:
 
       u8x8.home();
 
@@ -407,6 +438,38 @@ void uiThread(void *parameter)
       delay(50);
       break;
 
+    case SCREEN_CFG_GPS:
+
+      u8x8.home();
+
+      if (screenSetMode)
+      {
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 1);
+        u8x8.println("     GPS:   ");
+        u8x8.setFont(u8x8_font_courB18_2x3_f);
+        u8x8.setCursor(0, 3);
+        switch (gpsAction)
+        {
+        case GPS_FAKE:
+          u8x8.println(" FAKE");
+          break;
+
+        case GPS_WAIT:
+          u8x8.println(" WAIT");
+          break;
+        }
+      }
+      else
+      {
+        u8x8.setFont(u8x8_font_open_iconic_thing_4x4);
+        u8x8.drawGlyph(6, 1, 81);
+        u8x8.setFont(u8x8_font_victoriabold8_r);
+        u8x8.setCursor(0, 6);
+        u8x8.println("    Set GPS    ");
+      }
+      delay(50);
+      break;
     default:
     {
 
@@ -423,7 +486,7 @@ void uiThread(void *parameter)
         u8x8.home();
       }
 
-      if (hasFix)
+      if (hasFix or gpsAction == GPS_FAKE)
       {
 #if defined V1_0 || defined V1_1
 
@@ -625,9 +688,9 @@ void IRAM_ATTR isr()
 
   if (screenSetMode)
   {
-    switch (screen)
+    switch (screenCurrent)
     {
-    case 1:
+    case SCREEN_CFG_INTERVAL:
       sendIntervalKey++;
       if (sendIntervalKey >= (sizeof(sendInterval) / sizeof(*sendInterval)))
       {
@@ -635,21 +698,29 @@ void IRAM_ATTR isr()
       }
       break;
 
-    case 2:
+    case SCREEN_CFG_BEEPER:
       beeperAction++;
       if (beeperAction > BEEP_QUEUED)
       {
         beeperAction = BEEP_OFF;
       }
       break;
+
+    case SCREEN_CFG_GPS:
+      gpsAction++;
+      if (gpsAction > GPS_WAIT)
+      {
+        gpsAction = GPS_FAKE;
+      }
+      break;
     }
   }
   else
   {
-    screen++;
-    if (screen > 2)
+    screenCurrent++;
+    if (screenCurrent > sizeof(screens))
     {
-      screen = 0;
+      screenCurrent = SCREEN_DEFAULT;
     }
   }
 }
@@ -709,7 +780,7 @@ void loop()
   }
 
   // enter edit mode
-  if (lastkeypress > 0 && (millis() - lastkeypress > 1000) && screen != 0 && screenSetMode == false)
+  if (lastkeypress > 0 && (millis() - lastkeypress > 1000) && screenCurrent != SCREEN_DEFAULT && screenSetMode == false)
   {
     clearScreen = true;
     screenSetMode = true;
@@ -719,9 +790,9 @@ void loop()
   }
 
   // back to home screen
-  if (lastkeypress > 0 && (millis() - lastkeypress > 5000) && screen != 0)
+  if (lastkeypress > 0 && (millis() - lastkeypress > 5000) && screenCurrent != SCREEN_DEFAULT)
   {
-    screen = 0;
+    screenCurrent = SCREEN_DEFAULT;
     clearScreen = true;
     screenSetMode = false;
 
@@ -730,7 +801,20 @@ void loop()
   }
 
   hasFix = gps.checkGpsFix();
-  gps.gdisplay(dispBuffer);
+  if (gpsAction == GPS_FAKE)
+  {
+    dispBuffer[0] = 0; // Number of satellites in use (u32)
+    dispBuffer[1] = 0; // Speed in kilometers per hour (double)
+    dispBuffer[2] = 0; // Course in degrees (double)
+    dispBuffer[3] = 0; // Altitude in meters (double)
+    dispBuffer[4] = 0; // Horizontal Dim. of Precision (100ths-i32)
+    dispBuffer[5] = 0; // NMEA Sentence GPGSV, Element 3 (Sat in View)
+  }
+  else
+  {
+    gps.gdisplay(dispBuffer);
+  }
+
   os_runloop_once();
   yield();
 }
