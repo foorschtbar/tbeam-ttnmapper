@@ -10,23 +10,28 @@
 #include <config.h>
 
 #ifdef V1_1
-// Battery management
-#include "axp20x.h"
-#ifndef AXP192_SLAVE_ADDRESS
-#define AXP192_SLAVE_ADDRESS 0x34
+    // Battery management
+    #include "axp20x.h"
+    #ifndef AXP192_SLAVE_ADDRESS
+        #define AXP192_SLAVE_ADDRESS 0x34
+    #endif
+
+    #define PMU_IRQ 35
+
+    AXP20X_Class axp;
+    bool pmu_irq = false;
+    bool axp192_found = true;
+    String baChStatus = "No charging";
 #endif
 
-#define PMU_IRQ 35
-
-AXP20X_Class axp;
-bool pmu_irq = false;
-bool axp192_found = true;
-String baChStatus = "No charging";
+#ifdef V0_7
+  bool buttonpressed=false;
 #endif
+
 
 // if not set in config.h defaults to 1
 #ifndef TTN_PORT
-#define TTN_PORT 1
+    #define TTN_PORT 1
 #endif
 
 // keeps the millis since last "QUEUED" state
@@ -50,9 +55,8 @@ bool display_is_inverse = false;
 
 // time since last buttonpress
 // bool previousButtonState = 1; // will store last Button state. 1 = unpressed, 0 = pressed
-// uint32_t lastButtonTimer = 0; // will store how long button was pressed
-ulong lastkeypress = 0;
-bool setlock = false;
+uint32_t lastkeypress = 0;
+volatile bool setlock = false;
 
 // TinyGPS Wrapper
 Gps gps;
@@ -164,6 +168,7 @@ void onEvent(ev_t ev)
 void do_send(osjob_t *j)
 {
 
+  Serial.println("do send");
   // Check if there is not a current TX/RX job running
   if (LMIC.opmode & OP_TXRXPEND)
   {
@@ -203,7 +208,7 @@ void uiThread(void *parameter)
 {
 
   // Initialize Display
-#if defined V1_0 || defined V1_1
+#if defined V0_7 || defined V1_0 || defined V1_1
   U8X8_SSD1306_128X64_NONAME_HW_I2C u8x8(/* reset=*/U8X8_PIN_NONE, OLED_SCL, OLED_SDA);
 #endif
 
@@ -290,6 +295,22 @@ void uiThread(void *parameter)
   bool cleared_normscreen = false;
   for (;;)
   {
+#ifdef V0_7
+  int Push_button_state = digitalRead(BUTTON_R);
+  if ( Push_button_state == HIGH ){
+     buttonpressed=false;
+  }else{
+    setlock = true;
+    lastkeypress = millis();
+    if(!buttonpressed){
+      buttonpressed=true;
+      sendIntervalKey++;
+      if (sendIntervalKey >= (sizeof(sendInterval)/sizeof(*sendInterval))){
+        sendIntervalKey = 0;
+      }
+    }
+  }
+#endif
 
 #ifdef V1_1
     // interrupt is triggered if charge state changes (cable plugged/ unplugged)
@@ -361,7 +382,7 @@ void uiThread(void *parameter)
 
       if (hasFix)
       {
-#if defined V1_0 || defined V1_1
+#if defined V0_7 || defined V1_0 || defined V1_1
 
         if (LoraStatus == "QUEUED")
         {
@@ -423,7 +444,7 @@ void uiThread(void *parameter)
       else
       {
 
-#if defined V1_0 || defined V1_1
+#if defined V0_7 || defined V1_0 || defined V1_1
         u8x8.setInverseFont(0);
         u8x8.println("NO FIX");
         u8x8.print("Sat:   ");
@@ -467,12 +488,7 @@ void uiThread(void *parameter)
 void init_LMIC()
 {
   LMIC_reset();
-
-  uint8_t appskey[sizeof(APPSKEY)];
-  uint8_t nwkskey[sizeof(NWKSKEY)];
-  memcpy_P(appskey, APPSKEY, sizeof(APPSKEY));
-  memcpy_P(nwkskey, NWKSKEY, sizeof(NWKSKEY));
-  LMIC_setSession(0x13, DEVADDR, nwkskey, appskey);
+  LMIC_setSession (0x1, DEVADDR, NWKSKEY, APPSKEY);
 
 #if defined(CFG_eu868)
   // Set up the channels used by the Things Network, which corresponds
@@ -549,6 +565,7 @@ void init_LMIC()
 }
 
 // interrupt handler for buttonpress
+#ifndef V0_7
 void IRAM_ATTR isr()
 {
   setlock = true;
@@ -559,6 +576,7 @@ void IRAM_ATTR isr()
     sendIntervalKey = 0;
   }
 }
+#endif
 
 // void handleButton()
 // {
@@ -587,8 +605,12 @@ void setup()
   Serial.begin(115200);
 
   // Setup Hardware
-#ifdef V1_0
+#if defined V0_7 || defined V1_0
   pinMode(BAT_PIN, INPUT);
+#endif
+
+#ifdef V0_7
+  pinMode(BUTTON_R, INPUT);
 #endif
 
 #ifdef BUZZER_PIN
@@ -616,16 +638,18 @@ void setup()
 
   digitalWrite(BUILTIN_LED, LOW);
 
+#ifndef V0_7
   // use an interrupt for buttonpress
   pinMode(BUTTON_R, INPUT);
   attachInterrupt(BUTTON_R, isr, FALLING);
+#endif
 }
 
 void loop()
 {
 
 //Bord Rev1.1 cannot measure BAT this way. Measure is done in uiThread
-#ifdef V1_0
+#if defined V0_7 || defined V1_0
   vbat = (float)(analogRead(BAT_PIN)) / 4095 * 2 * 3.3 * 1.1;
 #endif
 
